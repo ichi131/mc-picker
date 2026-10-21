@@ -1,5 +1,5 @@
-import { uniformIndex, cleanNames, simplifyName } from './random.mjs';
-import { loadShared, saveShared, getSession } from './sync.js';
+import { uniformIndex, cleanNames, simplifyName } from './random.mjs?v=20261021-shared-2';
+import { loadShared, saveShared, getSession } from './sync.js?v=20261021-shared-2';
 const defaults = ['Zhang Zimo','Chen Jianan','Pang Zi Haur','松浦 孝平','Zhou Wangjin','住田 龍宇一','二見 颯','Wang Yichi','Lee Jaeyoung','Zhu Kexin','加藤 利梓','福重 茜','馬越 亮','Zhang Yizhou','Kim Morris','石山 蒼大','岩田 宗真','冨田 直也','藤岡 登貴留アマル','松村 成真','北野 泰地','林 祥太郎','鳥丸 広翔','Anindita Mandal','Sarthak Giri'];
 const $ = id => document.getElementById(id);
 let state = {names:defaults.map(simplifyName), excluded:[], history:[]};
@@ -16,16 +16,19 @@ try {
   if(Array.isArray(history))state.history=history;
   state.history=state.history.filter(h=>h&&typeof h.name==='string'&&Number.isFinite(h.time)).map(h=>({...h,name:simplifyName(h.name)})).slice(0,20);
 }catch{}
-let busy=false, saving=false, ready=false, refreshing=false, canEdit=false, revision=-1, syncProblem='';
+let busy=false, saving=false, ready=false, refreshing=false, canEdit=false, revision=-1, syncProblem='', saveProblem='', lastSaveRevision=-1;
 function adopt(snapshot){
   if(!snapshot || !Array.isArray(snapshot.names) || !Array.isArray(snapshot.excluded) || !Number.isSafeInteger(snapshot.revision))throw new Error('Invalid shared list response.');
   if(snapshot.revision<revision)return;
   state.names=snapshot.names;state.excluded=snapshot.excluded;revision=snapshot.revision;ready=true;syncProblem='';
 }
 function reportSync(){
-  $('syncStatus').textContent=syncProblem?'Connection needs attention':saving?'Saving for everyone…':!ready?'Connecting everyone…':'Shared live · synced';
-  $('syncStatus').classList.toggle('sync-error',!!syncProblem);
-  $('syncDetail').textContent=syncProblem||'Everyone can edit. Changes appear on other screens within a few seconds.';
+  const problem=saveProblem||syncProblem;
+  const receipt=problem?'Not saved — '+problem:saving?'Saving your change for everyone…':!ready?'Connecting to shared storage…':lastSaveRevision===revision?'Saved for everyone · '+state.excluded.length+' excluded · revision '+revision:'Shared list · '+state.excluded.length+' excluded · revision '+revision;
+  for(const id of ['saveReceipt','excludeReceipt']){$(id).textContent=receipt;$(id).classList.toggle('save-failed',!!problem);}
+  $('syncStatus').textContent=saveProblem?'Your change was not saved':syncProblem?'Connection needs attention':saving?'Saving for everyone…':!ready?'Connecting everyone…':'Shared live · synced';
+  $('syncStatus').classList.toggle('sync-error',!!problem);
+  $('syncDetail').textContent=problem||'Everyone can edit. Changes appear on other screens within a few seconds.';
   $('retrySync').disabled=saving||busy||refreshing;
   let imported;try{imported=localStorage.getItem('mc-picker-import-dismissed');}catch{}
   const differs=legacyState && (JSON.stringify(legacyState.names)!==JSON.stringify(state.names)||JSON.stringify(legacyState.excluded)!==JSON.stringify(state.excluded));
@@ -50,12 +53,12 @@ async function mutateShared(change){
   if(busy||saving||!ready||!canEdit)return false;
   const next={names:[...state.names],excluded:[...state.excluded]};
   change(next);
-  saving=true;syncProblem='';render();
-  try{adopt(await saveShared(next,revision));return true;}
+  saving=true;syncProblem='';saveProblem='';render();
+  try{adopt(await saveShared(next,revision));lastSaveRevision=revision;return true;}
   catch(error){
     if(error.latestState)adopt(error.latestState);
-    syncProblem=error.message||'Unable to save. Please retry.';
-    if(!error.latestState){try{adopt(await loadShared());syncProblem=error.message;}catch{ready=false;}}
+    saveProblem=error.message||'Unable to save. Please retry.';
+    if(!error.latestState){try{adopt(await loadShared());saveProblem=error.message;}catch{ready=false;}}
     return false;
   }finally{saving=false;render();}
 }
@@ -201,9 +204,9 @@ $('rosterForm').addEventListener('submit',async event=>{
   event.preventDefault();const names=cleanNames($('rosterInput').value);
   if(!names.length||names.length>1000||names.some(n=>n.length>150)){$('rosterError').textContent='Use 1–1,000 names, up to 150 characters per name.';return;}
   if(await mutateShared(next=>{next.names=names;next.excluded=next.excluded.filter(n=>names.includes(n));}))$('rosterDialog').close();
-  else $('rosterError').textContent=syncProblem;
+  else $('rosterError').textContent=saveProblem||syncProblem;
 });
-$('retrySync').addEventListener('click',async()=>{try{canEdit=(await getSession()).canEdit;}catch{}await refreshShared();});
+$('retrySync').addEventListener('click',async()=>{saveProblem='';try{canEdit=(await getSession()).canEdit;}catch{}await refreshShared();});
 $('importLocal').addEventListener('click',async()=>{if(!legacyState)return;if(await mutateShared(next=>{next.names=[...legacyState.names];next.excluded=[...legacyState.excluded];})){localStorage.setItem('mc-picker-import-dismissed','yes');render();}});
 $('dismissImport').addEventListener('click',()=>{localStorage.setItem('mc-picker-import-dismissed','yes');render();});
 document.addEventListener('keydown',event=>{if(event.code!=='Space'||event.repeat||event.ctrlKey||event.metaKey||event.altKey||$('rosterDialog').open||event.target.closest('input,textarea,button,a,[contenteditable]'))return;event.preventDefault();spin();});
