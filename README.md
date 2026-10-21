@@ -7,6 +7,7 @@ A static lab-meeting MC picker with equal chances for every eligible member.
 - Animated name reel and confetti for the selected MC.
 - Manual exclusion list: add names or restore them with the × button.
 - Add new members directly from the page, or edit the full roster.
+- Remove graduated members with the trash icon and a confirmation; removal is shared with everyone.
 - Names are displayed without parentheses or their contents.
 - Member lists and exclusions are shared with all visitors. Everyone can edit. Recent picks remain local to each browser.
 - Picking someone does not automatically exclude them.

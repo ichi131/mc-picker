@@ -32,7 +32,7 @@ async function canEdit(request,env){
   return diff===0;
 }
 function normalizedState(input) {
-  if (!input || !Array.isArray(input.names) || !input.names.length || input.names.length>1000 || !Array.isArray(input.excluded) || input.excluded.length>1000) throw new Error('Use 1–1,000 members.');
+  if (!input || !Array.isArray(input.names) || input.names.length>1000 || !Array.isArray(input.excluded) || input.excluded.length>1000) throw new Error('Use up to 1,000 members.');
   const simplify = name => name.normalize('NFKC').replace(/\([^)]*\)/g,'').replace(/\s+/g,' ').trim();
   const names=[];const seen=new Set();
   for(const value of input.names){

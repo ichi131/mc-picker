@@ -17,6 +17,7 @@ try {
   state.history=state.history.filter(h=>h&&typeof h.name==='string'&&Number.isFinite(h.time)).map(h=>({...h,name:simplifyName(h.name)})).slice(0,20);
 }catch{}
 let busy=false, saving=false, ready=false, refreshing=false, canEdit=false, revision=-1, syncProblem='', saveProblem='', lastSaveRevision=-1;
+let pendingRemoval=null;
 function adopt(snapshot){
   if(!snapshot || !Array.isArray(snapshot.names) || !Array.isArray(snapshot.excluded) || !Number.isSafeInteger(snapshot.revision))throw new Error('Invalid shared list response.');
   if(snapshot.revision<revision)return;
@@ -75,7 +76,7 @@ function render(){
   $('excludedCount').textContent=state.excluded.length;
   $('poolBadge').textContent=`${pool.length} in the pool`;
   $('spin').disabled=locked||!pool.length;
-  $('spinText').textContent=busy?'PICKING YOUR NEXT MC…':!ready?'CONNECTING…':pool.length?'CLICK TO PICK AN MC':'INCLUDE SOMEONE TO PICK';
+  $('spinText').textContent=busy?'PICKING YOUR NEXT MC…':!ready?'CONNECTING…':pool.length?'CLICK TO PICK AN MC':state.names.length?'INCLUDE SOMEONE TO PICK':'ADD A MEMBER TO PICK';
   $('includeAll').disabled=editLocked||!state.excluded.length;
   $('excludeAll').disabled=editLocked||state.excluded.length===state.names.length;
   $('editRoster').disabled=editLocked;
@@ -83,7 +84,7 @@ function render(){
   $('addMember').disabled=editLocked;
   $('excludedListCount').textContent=state.excluded.length;
   const select=$('excludeMember');const previousSelection=select.value;
-  select.replaceChildren(new Option(pool.length?'Choose a member…':'Everyone is excluded',''));
+  select.replaceChildren(new Option(pool.length?'Choose a member…':state.names.length?'Everyone is excluded':'No members yet',''));
   for(const name of pool)select.add(new Option(name,name));
   if(pool.includes(previousSelection))select.value=previousSelection;
   select.disabled=editLocked||!pool.length;
@@ -103,14 +104,21 @@ function render(){
   $('memberList').replaceChildren();
   for (const name of visible){
     const excluded=state.excluded.includes(name);
-    const row=document.createElement('label');row.className=`member-row${excluded?' excluded':''}`;
+    const row=document.createElement('div');row.className=`member-row${excluded?' excluded':''}`;
+    const toggle=document.createElement('label');toggle.className='member-toggle';
     const input=document.createElement('input');input.type='checkbox';input.checked=excluded;input.disabled=editLocked;input.setAttribute('aria-label',`Exclude ${name}`);
     input.addEventListener('change',()=>{const checked=input.checked;mutateShared(next=>{next.excluded=checked?[...new Set([...next.excluded,name])]:next.excluded.filter(n=>n!==name);});});
     const text=document.createElement('span');text.className='member-name';text.textContent=name;
     const prob=document.createElement('span');prob.className='member-prob';prob.textContent=excluded?'EXCLUDED':percent(pool.length);
-    row.append(input,text,prob);$('memberList').append(row);
+    const remove=document.createElement('button');remove.type='button';remove.className='remove-member';remove.disabled=editLocked;remove.setAttribute('aria-label',`Remove ${name}`);remove.title='Remove graduated member';
+    remove.innerHTML='<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-9 0 1 14h10l1-14M10 10v7m4-7v7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    remove.addEventListener('click',()=>{
+      if(busy||saving||!ready||!canEdit)return;
+      pendingRemoval=name;$('removeMemberName').textContent=name;$('removeMemberError').textContent='';$('removeMemberDialog').showModal();
+    });
+    toggle.append(input,text);row.append(toggle,prob,remove);$('memberList').append(row);
   }
-  if(!visible.length){const p=document.createElement('p');p.className='empty-history';p.textContent='No matching members.';$('memberList').append(p);}
+  if(!visible.length){const p=document.createElement('p');p.className='empty-history';p.textContent=state.names.length?'No matching members.':'No members yet. Add someone above.';$('memberList').append(p);}
   $('historyCount').textContent=state.history.length;
   $('clearHistory').disabled=busy||!state.history.length;
   $('history').replaceChildren();
@@ -206,10 +214,21 @@ $('rosterForm').addEventListener('submit',async event=>{
   if(await mutateShared(next=>{next.names=names;next.excluded=next.excluded.filter(n=>names.includes(n));}))$('rosterDialog').close();
   else $('rosterError').textContent=saveProblem||syncProblem;
 });
+$('cancelRemoveMember').addEventListener('click',()=>{$('removeMemberDialog').close();pendingRemoval=null;});
+$('removeMemberDialog').addEventListener('cancel',()=>{pendingRemoval=null;});
+$('confirmRemoveMember').addEventListener('click',async()=>{
+  const name=pendingRemoval;if(!name||busy||saving||!ready||!canEdit)return;
+  $('confirmRemoveMember').disabled=true;$('cancelRemoveMember').disabled=true;$('removeMemberError').textContent='';
+  try{
+    const removed=await mutateShared(next=>{next.names=next.names.filter(n=>n!==name);next.excluded=next.excluded.filter(n=>n!==name);});
+    if(removed){pendingRemoval=null;$('removeMemberDialog').close();$('memberMessage').textContent=`${name} removed for everyone.`;$('announcement').textContent=`${name} was removed from the shared member and exclusion lists.`;}
+    else $('removeMemberError').textContent=saveProblem||syncProblem||'Unable to remove this member. Please retry.';
+  }finally{$('confirmRemoveMember').disabled=false;$('cancelRemoveMember').disabled=false;}
+});
 $('retrySync').addEventListener('click',async()=>{saveProblem='';try{canEdit=(await getSession()).canEdit;}catch{}await refreshShared();});
 $('importLocal').addEventListener('click',async()=>{if(!legacyState)return;if(await mutateShared(next=>{next.names=[...legacyState.names];next.excluded=[...legacyState.excluded];})){localStorage.setItem('mc-picker-import-dismissed','yes');render();}});
 $('dismissImport').addEventListener('click',()=>{localStorage.setItem('mc-picker-import-dismissed','yes');render();});
-document.addEventListener('keydown',event=>{if(event.code!=='Space'||event.repeat||event.ctrlKey||event.metaKey||event.altKey||$('rosterDialog').open||event.target.closest('input,textarea,button,a,[contenteditable]'))return;event.preventDefault();spin();});
+document.addEventListener('keydown',event=>{if(event.code!=='Space'||event.repeat||event.ctrlKey||event.metaKey||event.altKey||$('rosterDialog').open||$('removeMemberDialog').open||event.target.closest('input,textarea,button,a,[contenteditable]'))return;event.preventDefault();spin();});
 render();
 try{canEdit=(await getSession()).canEdit;}catch(error){syncProblem=error.message;}
 await refreshShared();
