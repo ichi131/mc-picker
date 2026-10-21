@@ -1,48 +1,96 @@
 import { uniformIndex, cleanNames, simplifyName } from './random.mjs';
+import { loadShared, saveShared, getSession } from './sync.js';
 const defaults = ['Zhang Zimo','Chen Jianan','Pang Zi Haur','松浦 孝平','Zhou Wangjin','住田 龍宇一','二見 颯','Wang Yichi','Lee Jaeyoung','Zhu Kexin','加藤 利梓','福重 茜','馬越 亮','Zhang Yizhou','Kim Morris','石山 蒼大','岩田 宗真','冨田 直也','藤岡 登貴留アマル','松村 成真','北野 泰地','林 祥太郎','鳥丸 広翔','Anindita Mandal','Sarthak Giri'];
 const $ = id => document.getElementById(id);
-let state = {names:defaults.map(simplifyName), excluded:[], history:[], schemaVersion:3};
+let state = {names:defaults.map(simplifyName), excluded:[], history:[]};
+let legacyState=null;
 try {
-  const saved = JSON.parse(localStorage.getItem('lab-mc-picker-v1'));
-  if (saved && Array.isArray(saved.names) && saved.names.length && saved.names.length <= 1000 && saved.names.every(n => typeof n === 'string')) {
-    const names = cleanNames(saved.names.join('\n'));
-    if(names.length) {
-      const history=Array.isArray(saved.history) ? saved.history.filter(h => h && typeof h.name === 'string' && Number.isFinite(h.time)).map(h=>({...h,name:simplifyName(h.name)})).slice(0,20) : [];
-      const excluded=Array.isArray(saved.excluded) ? saved.excluded.filter(n=>typeof n==='string').map(simplifyName).filter(n=>names.includes(n)) : [];
-      state={names, history, excluded:[...new Set(excluded)], schemaVersion:3};
-    }
+  const saved=JSON.parse(localStorage.getItem('lab-mc-picker-v1'));
+  if(saved && Array.isArray(saved.names) && saved.names.every(n=>typeof n==='string') && Array.isArray(saved.excluded)){
+    const names=cleanNames(saved.names.join('\n'));
+    const excluded=saved.excluded.filter(n=>typeof n==='string').map(simplifyName).filter(n=>names.includes(n));
+    if(names.length)legacyState={names,excluded:[...new Set(excluded)]};
+    if(Array.isArray(saved.history))state.history=saved.history;
   }
-} catch {}
-let busy = false;
+  const history=JSON.parse(localStorage.getItem('mc-picker-history-v4'));
+  if(Array.isArray(history))state.history=history;
+  state.history=state.history.filter(h=>h&&typeof h.name==='string'&&Number.isFinite(h.time)).map(h=>({...h,name:simplifyName(h.name)})).slice(0,20);
+}catch{}
+let busy=false, saving=false, ready=false, refreshing=false, canEdit=false, revision=-1, syncProblem='';
+function adopt(snapshot){
+  if(!snapshot || !Array.isArray(snapshot.names) || !Array.isArray(snapshot.excluded) || !Number.isSafeInteger(snapshot.revision))throw new Error('Invalid shared list response.');
+  if(snapshot.revision<revision)return;
+  state.names=snapshot.names;state.excluded=snapshot.excluded;revision=snapshot.revision;ready=true;syncProblem='';
+}
+function reportSync(){
+  $('syncStatus').textContent=syncProblem?'Connection needs attention':saving?'Saving for everyone…':!ready?'Connecting everyone…':'Shared live · synced';
+  $('syncStatus').classList.toggle('sync-error',!!syncProblem);
+  $('syncDetail').textContent=syncProblem||'Everyone can edit. Changes appear on other screens within a few seconds.';
+  $('retrySync').disabled=saving||busy||refreshing;
+  let imported;try{imported=localStorage.getItem('mc-picker-import-dismissed');}catch{}
+  const differs=legacyState && (JSON.stringify(legacyState.names)!==JSON.stringify(state.names)||JSON.stringify(legacyState.excluded)!==JSON.stringify(state.excluded));
+  $('importPanel').hidden=!(ready && legacyState && !imported && differs);
+  $('importSummary').textContent=legacyState?`You have a list saved in this browser (${legacyState.names.length} members, ${legacyState.excluded.length} excluded). Importing replaces the shared list for everyone.`:'';
+  $('importLocal').disabled=busy||saving||!canEdit||!ready;
+}
+async function refreshShared(){
+  if(busy||saving||refreshing)return false;
+  refreshing=true;reportSync();
+  let changed=false;
+  try{
+    if(!canEdit)canEdit=(await getSession()).canEdit;
+    const oldRevision=revision;const wasReady=ready;
+    adopt(await loadShared());changed=oldRevision!==revision||!wasReady;
+    return true;
+  }
+  catch(error){syncProblem=error.message;ready=false;changed=true;return false;}
+  finally{refreshing=false;if(changed)render();else reportSync();}
+}
+async function mutateShared(change){
+  if(busy||saving||!ready||!canEdit)return false;
+  const next={names:[...state.names],excluded:[...state.excluded]};
+  change(next);
+  saving=true;syncProblem='';render();
+  try{adopt(await saveShared(next,revision));return true;}
+  catch(error){
+    if(error.latestState)adopt(error.latestState);
+    syncProblem=error.message||'Unable to save. Please retry.';
+    if(!error.latestState){try{adopt(await loadShared());syncProblem=error.message;}catch{ready=false;}}
+    return false;
+  }finally{saving=false;render();}
+}
 const eligible = () => state.names.filter(name => !state.excluded.includes(name));
 const percent = n => n ? `${(100/n).toLocaleString('en-US',{maximumFractionDigits:2})}%` : '—';
-function persist(){try{localStorage.setItem('lab-mc-picker-v1',JSON.stringify(state));}catch{document.querySelector('.saved-note').textContent='Session only';}}
+function persist(){try{localStorage.setItem('mc-picker-history-v4',JSON.stringify(state.history));}catch{}}
 function render(){
   const pool=eligible();
+  const locked=busy||saving||!ready;
+  const editLocked=locked||!canEdit;
+  reportSync();
   $('eligibleCount').textContent=pool.length;
   $('chance').textContent=percent(pool.length);
   $('excludedCount').textContent=state.excluded.length;
   $('poolBadge').textContent=`${pool.length} in the pool`;
-  $('spin').disabled=busy||!pool.length;
-  $('spinText').textContent=busy?'Finding your next MC…':pool.length?'Pick the next MC':'Include someone to pick';
-  $('includeAll').disabled=busy||!state.excluded.length;
-  $('excludeAll').disabled=busy||state.excluded.length===state.names.length;
-  $('editRoster').disabled=busy;
-  $('newMember').disabled=busy;
-  $('addMember').disabled=busy;
+  $('spin').disabled=locked||!pool.length;
+  $('spinText').textContent=busy?'PICKING YOUR NEXT MC…':!ready?'CONNECTING…':pool.length?'CLICK TO PICK AN MC':'INCLUDE SOMEONE TO PICK';
+  $('includeAll').disabled=editLocked||!state.excluded.length;
+  $('excludeAll').disabled=editLocked||state.excluded.length===state.names.length;
+  $('editRoster').disabled=editLocked;
+  $('newMember').disabled=editLocked;
+  $('addMember').disabled=editLocked;
   $('excludedListCount').textContent=state.excluded.length;
   const select=$('excludeMember');const previousSelection=select.value;
   select.replaceChildren(new Option(pool.length?'Choose a member…':'Everyone is excluded',''));
   for(const name of pool)select.add(new Option(name,name));
   if(pool.includes(previousSelection))select.value=previousSelection;
-  select.disabled=busy||!pool.length;
-  $('addExclusion').disabled=busy||!select.value;
+  select.disabled=editLocked||!pool.length;
+  $('addExclusion').disabled=editLocked||!select.value;
   $('excludedList').replaceChildren();
   for(const name of state.excluded){
-    const chip=document.createElement('button');chip.type='button';chip.className='excluded-chip';chip.disabled=busy;chip.setAttribute('aria-label',`Restore ${name}`);
+    const chip=document.createElement('button');chip.type='button';chip.className='excluded-chip';chip.disabled=editLocked;chip.setAttribute('aria-label',`Restore ${name}`);
     const text=document.createElement('span');text.textContent=name;
     const close=document.createElement('span');close.textContent='×';close.className='chip-close';close.setAttribute('aria-hidden','true');chip.append(text,close);
-    chip.addEventListener('click',()=>{if(busy)return;state.excluded=state.excluded.filter(n=>n!==name);persist();render();});
+    chip.addEventListener('click',()=>mutateShared(next=>{next.excluded=next.excluded.filter(n=>n!==name);}));
     $('excludedList').append(chip);
   }
   if(!state.excluded.length){const p=document.createElement('p');p.className='empty-history';p.textContent='No exclusions. Everyone is in the pool.';$('excludedList').append(p);}
@@ -53,8 +101,8 @@ function render(){
   for (const name of visible){
     const excluded=state.excluded.includes(name);
     const row=document.createElement('label');row.className=`member-row${excluded?' excluded':''}`;
-    const input=document.createElement('input');input.type='checkbox';input.checked=excluded;input.disabled=busy;input.setAttribute('aria-label',`Exclude ${name}`);
-    input.addEventListener('change',()=>{if(busy)return;state.excluded=input.checked?[...state.excluded,name]:state.excluded.filter(n=>n!==name);persist();render();});
+    const input=document.createElement('input');input.type='checkbox';input.checked=excluded;input.disabled=editLocked;input.setAttribute('aria-label',`Exclude ${name}`);
+    input.addEventListener('change',()=>{const checked=input.checked;mutateShared(next=>{next.excluded=checked?[...new Set([...next.excluded,name])]:next.excluded.filter(n=>n!==name);});});
     const text=document.createElement('span');text.className='member-name';text.textContent=name;
     const prob=document.createElement('span');prob.className='member-prob';prob.textContent=excluded?'EXCLUDED':percent(pool.length);
     row.append(input,text,prob);$('memberList').append(row);
@@ -71,10 +119,12 @@ function render(){
   });
 }
 async function spin(){
-  if(busy)return;
-  const pool=eligible();if(!pool.length)return;
+  if(busy||saving||!ready)return;
+  busy=true;render();
+  try{adopt(await loadShared());}catch(error){busy=false;ready=false;syncProblem=error.message;render();return;}
+  const pool=eligible();if(!pool.length){busy=false;render();return;}
   const name=pool[uniformIndex(pool.length)];
-  busy=true;render();document.querySelector('.picker-panel').classList.remove('picked');$('winner').classList.remove('winner-celebration');$('confetti').replaceChildren();$('slot').classList.add('spinning');$('resultLabel').textContent='PASSING THE MIC…';$('winnerSub').textContent=`${pool.length} people. ${percent(pool.length)} each.`;
+  render();document.querySelector('.picker-panel').classList.remove('picked');$('winner').classList.remove('winner-celebration');$('confetti').replaceChildren();$('slot').classList.add('spinning');$('resultLabel').textContent='PASSING THE MIC…';$('winnerSub').textContent=`${pool.length} people. ${percent(pool.length)} each.`;
   if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
     await rollNames(pool,name);
   }
@@ -132,23 +182,34 @@ function celebrate(){
 }
 $('spin').addEventListener('click',spin);
 $('search').addEventListener('input',render);
-$('excludeMember').addEventListener('change',()=>{$('addExclusion').disabled=busy||!$('excludeMember').value;});
-$('excludeForm').addEventListener('submit',event=>{event.preventDefault();const name=$('excludeMember').value;if(busy||!eligible().includes(name))return;state.excluded.push(name);persist();render();});
-$('addMemberForm').addEventListener('submit',event=>{
-  event.preventDefault();if(busy)return;
-  const raw=$('newMember').value;
-  const added=cleanNames(raw);
-  const message=$('memberMessage');
+$('excludeMember').addEventListener('change',()=>{$('addExclusion').disabled=busy||saving||!ready||!canEdit||!$('excludeMember').value;});
+$('excludeForm').addEventListener('submit',event=>{event.preventDefault();const name=$('excludeMember').value;if(!eligible().includes(name))return;mutateShared(next=>{next.excluded.push(name);});});
+$('addMemberForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const raw=$('newMember').value;const added=cleanNames(raw);const message=$('memberMessage');
   if(added.length!==1||raw.includes('\n')||added[0].length>150){message.textContent='Please enter one name, up to 150 characters.';return;}
   if(cleanNames([...state.names,added[0]].join('\n')).length===state.names.length){message.textContent='That member already exists. Uncheck their name to restore them if excluded.';return;}
   if(state.names.length>=1000){message.textContent='The member list is full (1,000 people).';return;}
-  state.names.push(added[0]);$('newMember').value='';$('search').value='';persist();render();message.textContent=`${added[0]} added to the pool.`;
+  if(await mutateShared(next=>{next.names.push(added[0]);})){$('newMember').value='';$('search').value='';message.textContent=`${added[0]} added for everyone.`;render();}
 });
-$('includeAll').addEventListener('click',()=>{if(busy)return;state.excluded=[];persist();render();});
-$('excludeAll').addEventListener('click',()=>{if(busy)return;state.excluded=[...state.names];persist();render();});
+$('includeAll').addEventListener('click',()=>mutateShared(next=>{next.excluded=[];}));
+$('excludeAll').addEventListener('click',()=>mutateShared(next=>{next.excluded=[...next.names];}));
 $('clearHistory').addEventListener('click',()=>{if(busy)return;state.history=[];persist();render();});
 $('editRoster').addEventListener('click',()=>{$('rosterInput').value=state.names.join('\n');$('rosterError').textContent='';$('rosterDialog').showModal();});
 for(const id of ['closeDialog','cancelEdit'])$(id).addEventListener('click',()=>$('rosterDialog').close());
-$('rosterForm').addEventListener('submit',event=>{event.preventDefault();const names=cleanNames($('rosterInput').value);if(!names.length||names.length>1000||names.some(n=>n.length>150)){$('rosterError').textContent='Use 1–1,000 names, up to 150 characters per name.';return;}state.names=names;state.excluded=state.excluded.filter(n=>names.includes(n));persist();render();$('rosterDialog').close();});
+$('rosterForm').addEventListener('submit',async event=>{
+  event.preventDefault();const names=cleanNames($('rosterInput').value);
+  if(!names.length||names.length>1000||names.some(n=>n.length>150)){$('rosterError').textContent='Use 1–1,000 names, up to 150 characters per name.';return;}
+  if(await mutateShared(next=>{next.names=names;next.excluded=next.excluded.filter(n=>names.includes(n));}))$('rosterDialog').close();
+  else $('rosterError').textContent=syncProblem;
+});
+$('retrySync').addEventListener('click',async()=>{try{canEdit=(await getSession()).canEdit;}catch{}await refreshShared();});
+$('importLocal').addEventListener('click',async()=>{if(!legacyState)return;if(await mutateShared(next=>{next.names=[...legacyState.names];next.excluded=[...legacyState.excluded];})){localStorage.setItem('mc-picker-import-dismissed','yes');render();}});
+$('dismissImport').addEventListener('click',()=>{localStorage.setItem('mc-picker-import-dismissed','yes');render();});
 document.addEventListener('keydown',event=>{if(event.code!=='Space'||event.repeat||event.ctrlKey||event.metaKey||event.altKey||$('rosterDialog').open||event.target.closest('input,textarea,button,a,[contenteditable]'))return;event.preventDefault();spin();});
-persist();render();
+render();
+try{canEdit=(await getSession()).canEdit;}catch(error){syncProblem=error.message;}
+await refreshShared();
+setInterval(()=>{if(!document.hidden)refreshShared();},3000);
+window.addEventListener('focus',()=>refreshShared());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshShared();});
