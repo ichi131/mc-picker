@@ -24,7 +24,7 @@ function adopt(snapshot){
 }
 function reportSync(){
   const problem=saveProblem||syncProblem;
-  const receipt=problem?'Not saved — '+problem:saving?'Saving your change for everyone…':!ready?'Connecting to shared storage…':lastSaveRevision===revision?'Saved for everyone · '+state.excluded.length+' excluded · revision '+revision:'Shared list · '+state.excluded.length+' excluded · revision '+revision;
+  const receipt=problem?'Not saved — '+problem:saving?'Saving your change for everyone…':!ready?'Connecting to shared storage…':lastSaveRevision===revision?'Saved for everyone · '+state.excluded.length+' excluded':'Shared list · '+state.excluded.length+' excluded';
   for(const id of ['saveReceipt','excludeReceipt']){$(id).textContent=receipt;$(id).classList.toggle('save-failed',!!problem);}
   $('syncStatus').textContent=saveProblem?'Your change was not saved':syncProblem?'Connection needs attention':saving?'Saving for everyone…':!ready?'Connecting everyone…':'Shared live · synced';
   $('syncStatus').classList.toggle('sync-error',!!problem);
